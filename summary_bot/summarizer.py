@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import re
 
 import httpx
 
@@ -11,23 +12,23 @@ class ConfigurationError(RuntimeError):
     """Raised when the summarizer is missing required runtime configuration."""
 
 
-class OllamaChatSummarizer:
+class BaseChatSummarizer:
     def __init__(
         self,
         *,
-        base_url: str,
         model: str,
         timeout_seconds: float,
         temperature: float,
         max_transcript_chars: int,
         summary_language: str,
+        summary_instructions: str | None = None,
     ):
-        self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.temperature = temperature
         self.max_transcript_chars = max(max_transcript_chars, 1000)
         self.summary_language = summary_language
+        self.summary_instructions = summary_instructions
 
     async def summarize(
         self,
@@ -97,13 +98,48 @@ class OllamaChatSummarizer:
         return await self._create_response(user_content)
 
     async def _create_response(self, user_content: str) -> str:
+        raise NotImplementedError
+
+    def _messages(self, user_content: str) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": _instructions(
+                    self.summary_language,
+                    self.summary_instructions,
+                ),
+            },
+            {"role": "user", "content": user_content},
+        ]
+
+
+class OllamaChatSummarizer(BaseChatSummarizer):
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        timeout_seconds: float,
+        temperature: float,
+        max_transcript_chars: int,
+        summary_language: str,
+        summary_instructions: str | None = None,
+    ):
+        super().__init__(
+            model=model,
+            timeout_seconds=timeout_seconds,
+            temperature=temperature,
+            max_transcript_chars=max_transcript_chars,
+            summary_language=summary_language,
+            summary_instructions=summary_instructions,
+        )
+        self.base_url = base_url.rstrip("/")
+
+    async def _create_response(self, user_content: str) -> str:
         payload = {
             "model": self.model,
             "stream": False,
-            "messages": [
-                {"role": "system", "content": _instructions(self.summary_language)},
-                {"role": "user", "content": user_content},
-            ],
+            "messages": self._messages(user_content),
             "options": {"temperature": self.temperature},
         }
 
@@ -127,11 +163,104 @@ class OllamaChatSummarizer:
         content = (data.get("message") or {}).get("content") or data.get("response")
         if not content:
             raise RuntimeError("Ollama returned no summary text")
-        return str(content).strip()
+        return _strip_thinking_blocks(str(content)).strip()
 
 
-def _instructions(summary_language: str) -> str:
-    return f"""
+class OpenAICompatibleChatSummarizer(BaseChatSummarizer):
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        provider_name: str,
+        extra_headers: dict[str, str] | None = None,
+        timeout_seconds: float,
+        temperature: float,
+        max_transcript_chars: int,
+        summary_language: str,
+        summary_instructions: str | None = None,
+    ):
+        super().__init__(
+            model=model,
+            timeout_seconds=timeout_seconds,
+            temperature=temperature,
+            max_transcript_chars=max_transcript_chars,
+            summary_language=summary_language,
+            summary_instructions=summary_instructions,
+        )
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.provider_name = provider_name
+        self.extra_headers = extra_headers or {}
+
+    async def _create_response(self, user_content: str) -> str:
+        payload = {
+            "model": self.model,
+            "messages": self._messages(user_content),
+            "temperature": self.temperature,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            **self.extra_headers,
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds,
+                trust_env=False,
+            ) as client:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.ConnectError as exc:
+            raise ConfigurationError(
+                f"Cannot connect to {self.provider_name} API at {self.base_url}."
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            detail = _error_detail(exc.response)
+            if exc.response.status_code == 429:
+                retry_after = exc.response.headers.get("Retry-After")
+                retry_hint = f" Try again in about {retry_after} seconds." if retry_after else ""
+                raise ConfigurationError(
+                    f"{self.provider_name} is temporarily rate-limited.{retry_hint}"
+                ) from exc
+            raise RuntimeError(f"{self.provider_name} API request failed: {detail}") from exc
+
+        data = response.json()
+        choices = data.get("choices") or []
+        content = None
+        if choices:
+            content = (choices[0].get("message") or {}).get("content")
+        if not content:
+            raise RuntimeError(f"{self.provider_name} API returned no summary text")
+        return _strip_thinking_blocks(str(content)).strip()
+
+
+class GeminiChatSummarizer(OpenAICompatibleChatSummarizer):
+    def __init__(self, **kwargs):
+        super().__init__(provider_name="Gemini", **kwargs)
+
+
+class OpenRouterChatSummarizer(OpenAICompatibleChatSummarizer):
+    def __init__(self, **kwargs):
+        super().__init__(
+            provider_name="OpenRouter",
+            extra_headers={
+                "HTTP-Referer": "https://github.com/ianhoe/telegram-chat-ai-summary",
+                "X-Title": "Telegram Chat AI Summary",
+            },
+            **kwargs,
+        )
+
+
+def _instructions(summary_language: str, summary_instructions: str | None = None) -> str:
+    base_instructions = f"""
+/no_think
+
 You summarize Telegram group chats for people who need to catch up quickly.
 Write in {summary_language}.
 
@@ -147,8 +276,22 @@ Rules:
 - Use the previous summary only as context for references and follow-ups.
 - Keep names, dates, amounts, links, and commitments precise.
 - Do not invent owners, decisions, or action items.
+- Return only the final summary. Do not include hidden reasoning or thinking tags.
 - If the chat is mostly casual or low-signal, say that briefly.
 """.strip()
+    if not summary_instructions:
+        return base_instructions
+    return f"{base_instructions}\n\nGroup-specific instructions:\n{summary_instructions.strip()}"
+
+
+def _strip_thinking_blocks(content: str) -> str:
+    without_tags = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
+    return re.sub(
+        r"^\s*Thinking\.\.\..*?\.\.\.done thinking\.\s*",
+        "",
+        without_tags,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
 
 
 def _chunk_messages(

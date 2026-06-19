@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: telegram-chat-ai-summary
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m summary_bot
+    envVars:
+      - key: APP_MODE
+        value: webhook
+      - key: MODEL_PROVIDER
+        value: openrouter
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: OPENROUTER_MODEL
+        value: qwen/qwen3-next-80b-a3b-instruct:free
+      - key: MODEL_TIMEOUT_SECONDS
+        value: "300"
+      - key: MODEL_TEMPERATURE
+        value: "0.2"
+      - key: SUMMARY_LANGUAGE
+        value: same language as the chat
+      - key: SUMMARY_INSTRUCTIONS_PATH
+        value: context/instructions.md
+      - key: MAX_TRANSCRIPT_CHARS
+        value: "120000"
+      - key: MAX_MESSAGES_PER_SUMMARY
+        value: "0"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_SECRET_TOKEN
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false

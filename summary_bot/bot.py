@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import logging
+import os
 
-from telegram import Message, Update
+from telegram import BotCommand, Message, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .config import Settings, load_settings
-from .storage import ChatStore
-from .summarizer import ConfigurationError, OllamaChatSummarizer
+from .storage import MessageStore, build_store
+from .summarizer import (
+    BaseChatSummarizer,
+    ConfigurationError,
+    GeminiChatSummarizer,
+    OllamaChatSummarizer,
+    OpenRouterChatSummarizer,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -16,17 +23,10 @@ MAX_TELEGRAM_MESSAGE_LENGTH = 3900
 
 
 def build_application(settings: Settings) -> Application:
-    store = ChatStore(settings.database_path)
-    summarizer = OllamaChatSummarizer(
-        base_url=settings.ollama_base_url,
-        model=settings.ollama_model,
-        timeout_seconds=settings.ollama_timeout_seconds,
-        temperature=settings.ollama_temperature,
-        max_transcript_chars=settings.max_transcript_chars,
-        summary_language=settings.summary_language,
-    )
+    store = build_store(database_url=settings.database_url, database_path=settings.database_path)
+    summarizer = _build_summarizer(settings)
 
-    application = Application.builder().token(settings.telegram_bot_token).build()
+    application = Application.builder().token(settings.telegram_bot_token).post_init(_set_bot_commands).build()
 
     application.bot_data["store"] = store
     application.bot_data["summarizer"] = summarizer
@@ -40,6 +40,39 @@ def build_application(settings: Settings) -> Application:
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, record_message))
 
     return application
+
+
+def _build_summarizer(settings: Settings) -> BaseChatSummarizer:
+    common_args = {
+        "base_url": settings.model_base_url,
+        "model": settings.model_name,
+        "timeout_seconds": settings.model_timeout_seconds,
+        "temperature": settings.model_temperature,
+        "max_transcript_chars": settings.max_transcript_chars,
+        "summary_language": settings.summary_language,
+        "summary_instructions": settings.summary_instructions,
+    }
+    if settings.model_provider == "gemini":
+        if settings.model_api_key is None:
+            raise RuntimeError("GEMINI_API_KEY is required when MODEL_PROVIDER=gemini")
+        return GeminiChatSummarizer(api_key=settings.model_api_key, **common_args)
+    if settings.model_provider == "openrouter":
+        if settings.model_api_key is None:
+            raise RuntimeError("OPENROUTER_API_KEY is required when MODEL_PROVIDER=openrouter")
+        return OpenRouterChatSummarizer(api_key=settings.model_api_key, **common_args)
+    return OllamaChatSummarizer(**common_args)
+
+
+async def _set_bot_commands(application: Application) -> None:
+    await application.bot.set_my_commands(
+        [
+            BotCommand("summary", "Summarize new messages"),
+            BotCommand("lastsummary", "Show the latest saved summary"),
+            BotCommand("stats", "Show stored and new message counts"),
+            BotCommand("reset_summary", "Start the next summary from now"),
+            BotCommand("help", "Show usage"),
+        ]
+    )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -67,7 +100,7 @@ async def record_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not text:
         return
 
-    store: ChatStore = context.application.bot_data["store"]
+    store: MessageStore = context.application.bot_data["store"]
     store.save_message(
         chat_id=chat.id,
         message_id=message.message_id,
@@ -83,7 +116,7 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if message is None or chat is None:
         return
 
-    store: ChatStore = context.application.bot_data["store"]
+    store: MessageStore = context.application.bot_data["store"]
     max_messages = int(context.application.bot_data.get("max_messages_per_summary") or 0)
     total_new_messages = store.count_new_messages(chat.id)
     if total_new_messages == 0:
@@ -94,7 +127,7 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     messages = store.get_new_messages(chat.id, limit=limit)
     partial = len(messages) < total_new_messages
 
-    summarizer: OllamaChatSummarizer = context.application.bot_data["summarizer"]
+    summarizer: BaseChatSummarizer = context.application.bot_data["summarizer"]
     previous = store.get_latest_summary(chat.id)
 
     await message.chat.send_action(ChatAction.TYPING)
@@ -135,7 +168,7 @@ async def last_summary_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if message is None or chat is None:
         return
 
-    store: ChatStore = context.application.bot_data["store"]
+    store: MessageStore = context.application.bot_data["store"]
     summary = store.get_latest_summary(chat.id)
     if summary is None:
         await message.reply_text("No summary has been saved for this chat yet.")
@@ -154,7 +187,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if message is None or chat is None:
         return
 
-    store: ChatStore = context.application.bot_data["store"]
+    store: MessageStore = context.application.bot_data["store"]
     total = store.count_messages(chat.id)
     new = store.count_new_messages(chat.id)
     checkpoint = store.get_checkpoint(chat.id)
@@ -171,7 +204,7 @@ async def reset_summary_command(update: Update, context: ContextTypes.DEFAULT_TY
     if message is None or chat is None:
         return
 
-    store: ChatStore = context.application.bot_data["store"]
+    store: MessageStore = context.application.bot_data["store"]
     latest_message_id = store.get_latest_message_id(chat.id)
     store.reset_checkpoint(chat.id, latest_message_id)
     await message.reply_text(f"Summary checkpoint reset to message #{latest_message_id}.")
@@ -229,6 +262,22 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         level=logging.INFO,
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = load_settings()
     application = build_application(settings)
+    if settings.app_mode == "webhook":
+        if not settings.webhook_url:
+            raise RuntimeError("WEBHOOK_URL is required when APP_MODE=webhook")
+        port = int(os.getenv("PORT", "10000"))
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path="telegram",
+            webhook_url=f"{settings.webhook_url.rstrip('/')}/telegram",
+            allowed_updates=Update.ALL_TYPES,
+            secret_token=settings.webhook_secret_token,
+        )
+        return
+    if settings.app_mode != "polling":
+        raise RuntimeError("APP_MODE must be either 'polling' or 'webhook'")
     application.run_polling(allowed_updates=Update.ALL_TYPES)

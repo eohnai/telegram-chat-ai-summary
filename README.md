@@ -1,6 +1,6 @@
 # Telegram Chat AI Summary Bot
 
-A polling Telegram bot that records chat messages while it is running and summarizes only the messages after the previous successful `/summary`. Summaries run through a local Ollama model by default.
+A Telegram bot that records chat messages while it is running and summarizes only the messages after the previous successful `/summary`. Summaries run through a local Ollama model by default, or a hosted provider such as OpenRouter for deployment.
 
 ## Important Telegram Limitations
 
@@ -32,23 +32,85 @@ TELEGRAM_BOT_TOKEN=your-new-botfather-token
 
 Keep `.env` local. Do not commit it.
 
+## Summary Instructions
+
+The bot can load extra persona and group context from `context/instructions.md`.
+The default `.env.example` enables it with:
+
+```bash
+SUMMARY_INSTRUCTIONS_PATH=context/instructions.md
+```
+
+Edit that file to describe how AkiKai should summarize this group. Keep stable guidance there, such as the bot persona, the group's purpose, recurring project names, or preferred summary style. The bot will still only summarize messages it has actually received.
+
 ## Ollama Setup
 
-Install Ollama, start it, and pull a model:
+For local development, install Ollama, start it, and pull a model:
 
 ```bash
 ollama serve
-ollama pull qwen3:8b
+ollama pull qwen3:latest
 ```
 
 The default `.env.example` uses:
 
 ```bash
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen3:8b
+OLLAMA_MODEL=qwen3:latest
 ```
 
-You can change `OLLAMA_MODEL` to another local model, for example `qwen2.5:7b`, `llama3.2`, or any model you have pulled into Ollama.
+Ollama currently maps `qwen3:latest` to the 8B Qwen3 model. For higher quality on a machine with enough memory, pull and set `OLLAMA_MODEL=qwen3:30b` instead. `qwen3:235b` is also available, but it is a very large model and is not practical on most laptops.
+
+## OpenRouter Setup
+
+For hosted Qwen without running Ollama locally, set:
+
+```bash
+MODEL_PROVIDER=openrouter
+OPENROUTER_API_KEY=your-openrouter-api-key
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=qwen/qwen3-next-80b-a3b-instruct:free
+```
+
+`OPENROUTER_API_KEY` is preferred. `QWEN_API_KEY` is also accepted for compatibility with older local `.env` files.
+
+You can switch to any other OpenRouter chat model by changing only `OPENROUTER_MODEL`.
+
+## Render Free Deployment
+
+Render Free cannot run local Ollama, and its filesystem is temporary. For a free cloud deployment, use:
+
+- Render Free Web Service for the Telegram webhook
+- Neon Free Postgres for message and summary storage
+- OpenRouter for hosted Qwen summaries
+
+Steps:
+
+1. Rotate your Telegram bot token in BotFather before deploying.
+2. Push this repo to GitHub.
+3. Create a free Neon Postgres project and copy its pooled connection string.
+4. Create an OpenRouter API key.
+5. In Render, create a new Blueprint from this repo's `render.yaml`.
+6. Set these Render environment variables:
+
+```bash
+TELEGRAM_BOT_TOKEN=your-rotated-bot-token
+DATABASE_URL=your-neon-pooled-postgres-url
+OPENROUTER_API_KEY=your-openrouter-api-key
+WEBHOOK_URL=https://your-render-service-name.onrender.com
+```
+
+The blueprint sets these defaults:
+
+```bash
+APP_MODE=webhook
+MODEL_PROVIDER=openrouter
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=qwen/qwen3-next-80b-a3b-instruct:free
+SUMMARY_INSTRUCTIONS_PATH=context/instructions.md
+```
+
+Render Free web services spin down after idle time, so the first message after inactivity can be delayed while the service wakes up.
 
 ## Run
 

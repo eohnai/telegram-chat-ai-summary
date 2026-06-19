@@ -46,6 +46,8 @@ def _build_summarizer(settings: Settings) -> BaseChatSummarizer:
     common_args = {
         "base_url": settings.model_base_url,
         "model": settings.model_name,
+        "models": settings.model_names,
+        "max_attempts": settings.model_max_attempts,
         "timeout_seconds": settings.model_timeout_seconds,
         "temperature": settings.model_temperature,
         "max_transcript_chars": settings.max_transcript_chars,
@@ -137,7 +139,7 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             previous_summary=previous.summary if previous else None,
         )
     except ConfigurationError as exc:
-        await message.reply_text(str(exc))
+        await _reply_long_text(message, str(exc))
         return
     except Exception:
         LOGGER.exception("Failed to generate summary")

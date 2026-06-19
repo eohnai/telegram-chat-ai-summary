@@ -17,6 +17,8 @@ class BaseChatSummarizer:
         self,
         *,
         model: str,
+        models: tuple[str, ...] | None = None,
+        max_attempts: int = 1,
         timeout_seconds: float,
         temperature: float,
         max_transcript_chars: int,
@@ -24,6 +26,8 @@ class BaseChatSummarizer:
         summary_instructions: str | None = None,
     ):
         self.model = model
+        self.models = tuple(models or (model,))[:5]
+        self.max_attempts = min(max(max_attempts, 1), 5)
         self.timeout_seconds = timeout_seconds
         self.temperature = temperature
         self.max_transcript_chars = max(max_transcript_chars, 1000)
@@ -119,6 +123,8 @@ class OllamaChatSummarizer(BaseChatSummarizer):
         *,
         base_url: str,
         model: str,
+        models: tuple[str, ...] | None = None,
+        max_attempts: int = 1,
         timeout_seconds: float,
         temperature: float,
         max_transcript_chars: int,
@@ -127,6 +133,8 @@ class OllamaChatSummarizer(BaseChatSummarizer):
     ):
         super().__init__(
             model=model,
+            models=models,
+            max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
             temperature=temperature,
             max_transcript_chars=max_transcript_chars,
@@ -173,6 +181,8 @@ class OpenAICompatibleChatSummarizer(BaseChatSummarizer):
         base_url: str,
         api_key: str,
         model: str,
+        models: tuple[str, ...] | None = None,
+        max_attempts: int = 1,
         provider_name: str,
         extra_headers: dict[str, str] | None = None,
         timeout_seconds: float,
@@ -183,6 +193,8 @@ class OpenAICompatibleChatSummarizer(BaseChatSummarizer):
     ):
         super().__init__(
             model=model,
+            models=models,
+            max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
             temperature=temperature,
             max_transcript_chars=max_transcript_chars,
@@ -195,8 +207,28 @@ class OpenAICompatibleChatSummarizer(BaseChatSummarizer):
         self.extra_headers = extra_headers or {}
 
     async def _create_response(self, user_content: str) -> str:
+        attempts = self._model_attempts()
+        errors: list[str] = []
+        for model in attempts:
+            try:
+                return await self._create_model_response(model, user_content)
+            except ConfigurationError as exc:
+                errors.append(f"{model}: {exc}")
+            except RuntimeError as exc:
+                errors.append(f"{model}: {exc}")
+        detail = " | ".join(errors) if errors else "No models were configured."
+        raise ConfigurationError(
+            f"{self.provider_name} failed after {len(attempts)} attempt(s): {detail}"
+        )
+
+    def _model_attempts(self) -> tuple[str, ...]:
+        if len(self.models) == 1:
+            return tuple(self.models[0] for _ in range(self.max_attempts))
+        return self.models[: self.max_attempts]
+
+    async def _create_model_response(self, model: str, user_content: str) -> str:
         payload = {
-            "model": self.model,
+            "model": model,
             "messages": self._messages(user_content),
             "temperature": self.temperature,
         }

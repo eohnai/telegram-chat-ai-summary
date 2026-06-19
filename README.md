@@ -69,12 +69,20 @@ For hosted Qwen without running Ollama locally, set:
 MODEL_PROVIDER=openrouter
 OPENROUTER_API_KEY=your-openrouter-api-key
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_MODEL=qwen/qwen3-next-80b-a3b-instruct:free
+OPENROUTER_MODEL=openrouter/free
 ```
 
 `OPENROUTER_API_KEY` is preferred. `QWEN_API_KEY` is also accepted for compatibility with older local `.env` files.
 
 You can switch to any other OpenRouter chat model by changing only `OPENROUTER_MODEL`.
+To try multiple fallbacks before returning an error, set `OPENROUTER_MODELS` as a comma-separated list. The bot tries up to `MODEL_MAX_ATTEMPTS`, capped at 5:
+
+```bash
+OPENROUTER_MODELS=openrouter/free,meta-llama/llama-3.2-3b-instruct:free,qwen/qwen3-coder:free
+MODEL_MAX_ATTEMPTS=5
+```
+
+If only one model is configured, the bot can retry that same model/router up to `MODEL_MAX_ATTEMPTS` times. This is useful with `openrouter/free`, because OpenRouter may route each attempt to a different free backend.
 
 ## Render Free Deployment
 
@@ -106,7 +114,9 @@ The blueprint sets these defaults:
 APP_MODE=webhook
 MODEL_PROVIDER=openrouter
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_MODEL=qwen/qwen3-next-80b-a3b-instruct:free
+OPENROUTER_MODEL=openrouter/free
+OPENROUTER_MODELS=openrouter/free,meta-llama/llama-3.2-3b-instruct:free,qwen/qwen3-coder:free
+MODEL_MAX_ATTEMPTS=5
 SUMMARY_INSTRUCTIONS_PATH=context/instructions.md
 ```
 

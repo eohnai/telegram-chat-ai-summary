@@ -16,7 +16,9 @@ class Settings:
     model_provider: str
     model_base_url: str
     model_name: str
+    model_names: tuple[str, ...]
     model_api_key: str | None
+    model_max_attempts: int
     model_timeout_seconds: float
     model_temperature: float
     database_url: str | None
@@ -70,6 +72,13 @@ def _env_file_text(name: str) -> str | None:
     return text or None
 
 
+def _split_env_list(name: str) -> tuple[str, ...]:
+    raw_value = os.getenv(name)
+    if raw_value is None or raw_value.strip() == "":
+        return ()
+    return tuple(item.strip() for item in raw_value.split(",") if item.strip())
+
+
 def load_settings() -> Settings:
     load_dotenv()
 
@@ -85,6 +94,7 @@ def load_settings() -> Settings:
     if model_provider == "ollama":
         model_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
         model_name = os.getenv("OLLAMA_MODEL", "qwen3:latest").strip()
+        model_names = (model_name,)
         model_api_key = None
     elif model_provider == "gemini":
         model_base_url = os.getenv(
@@ -92,6 +102,7 @@ def load_settings() -> Settings:
             "https://generativelanguage.googleapis.com/v1beta/openai",
         ).strip()
         model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip()
+        model_names = (model_name,)
         model_api_key = os.getenv("GEMINI_API_KEY", "").strip() or None
         if not model_api_key:
             raise RuntimeError("GEMINI_API_KEY is required when MODEL_PROVIDER=gemini")
@@ -101,6 +112,7 @@ def load_settings() -> Settings:
             "https://openrouter.ai/api/v1",
         ).strip()
         model_name = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-next-80b-a3b-instruct:free").strip()
+        model_names = _split_env_list("OPENROUTER_MODELS") or (model_name,)
         model_api_key = (
             os.getenv("OPENROUTER_API_KEY", "").strip()
             or os.getenv("QWEN_API_KEY", "").strip()
@@ -124,7 +136,9 @@ def load_settings() -> Settings:
         model_provider=model_provider,
         model_base_url=model_base_url or "http://localhost:11434",
         model_name=model_name or "qwen3:latest",
+        model_names=model_names[:5] or (model_name or "qwen3:latest",),
         model_api_key=model_api_key,
+        model_max_attempts=min(max(_env_int("MODEL_MAX_ATTEMPTS", 5), 1), 5),
         model_timeout_seconds=_env_float_alias(
             "MODEL_TIMEOUT_SECONDS",
             "OLLAMA_TIMEOUT_SECONDS",

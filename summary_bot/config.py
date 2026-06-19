@@ -111,10 +111,15 @@ def load_settings() -> Settings:
                 "OPENROUTER_API_KEY or QWEN_API_KEY is required when MODEL_PROVIDER=openrouter"
             )
 
+    webhook_url = os.getenv("WEBHOOK_URL", "").strip() or None
+    app_mode = os.getenv("APP_MODE", "").strip().lower()
+    if not app_mode:
+        app_mode = "webhook" if webhook_url else "polling"
+
     return Settings(
         telegram_bot_token=telegram_bot_token,
-        app_mode=os.getenv("APP_MODE", "polling").strip().lower() or "polling",
-        webhook_url=os.getenv("WEBHOOK_URL", "").strip() or None,
+        app_mode=app_mode,
+        webhook_url=webhook_url,
         webhook_secret_token=os.getenv("WEBHOOK_SECRET_TOKEN", "").strip() or None,
         model_provider=model_provider,
         model_base_url=model_base_url or "http://localhost:11434",

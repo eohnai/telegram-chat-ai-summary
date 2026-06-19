@@ -269,7 +269,10 @@ class OpenAICompatibleChatSummarizer(BaseChatSummarizer):
             content = (choices[0].get("message") or {}).get("content")
         if not content:
             raise RuntimeError(f"{self.provider_name} API returned no summary text")
-        return _strip_thinking_blocks(str(content)).strip()
+        summary = _strip_thinking_blocks(str(content)).strip()
+        if _looks_like_non_summary(summary):
+            raise RuntimeError(f"{self.provider_name} API returned a non-summary response")
+        return summary
 
 
 class GeminiChatSummarizer(OpenAICompatibleChatSummarizer):
@@ -324,6 +327,18 @@ def _strip_thinking_blocks(content: str) -> str:
         without_tags,
         flags=re.DOTALL | re.IGNORECASE,
     )
+
+
+def _looks_like_non_summary(content: str) -> bool:
+    normalized = re.sub(r"\s+", " ", content).strip().lower()
+    if not normalized:
+        return True
+    safety_only_patterns = (
+        r"^user safety\s*:\s*(safe|unsafe|unknown)\.?$",
+        r"^safety\s*:\s*(safe|unsafe|unknown)\.?$",
+        r"^safe$",
+    )
+    return any(re.fullmatch(pattern, normalized) for pattern in safety_only_patterns)
 
 
 def _chunk_messages(

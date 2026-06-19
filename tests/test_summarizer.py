@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from summary_bot.summarizer import OpenRouterChatSummarizer, _instructions, _strip_thinking_blocks
+from summary_bot.summarizer import (
+    OpenRouterChatSummarizer,
+    _instructions,
+    _looks_like_non_summary,
+    _strip_thinking_blocks,
+)
 
 
 class SummarizerTest(unittest.TestCase):
@@ -25,6 +30,17 @@ class SummarizerTest(unittest.TestCase):
         self.assertIn("Write in English.", instructions)
         self.assertIn("Group-specific instructions:", instructions)
         self.assertIn("You are AkiKai, a chat summary helper.", instructions)
+
+    def test_safety_label_is_not_a_valid_summary(self) -> None:
+        self.assertTrue(_looks_like_non_summary("User Safety: safe"))
+
+    def test_low_signal_summary_is_valid(self) -> None:
+        self.assertFalse(
+            _looks_like_non_summary(
+                "This transcript contains only casual, low-signal messages with no "
+                "substantive content to summarize."
+            )
+        )
 
     def test_openrouter_model_attempts_are_capped_at_five(self) -> None:
         summarizer = OpenRouterChatSummarizer(
